@@ -1,58 +1,55 @@
-# MVVM + Clean Architecture: Users, Favourites & Weather (SwiftUI + Observation + Core Data)
+# MVVM + Clean Architecture, the basics (SwiftUI)
 
-Same app and features as the MVC / MVVM samples, restructured with Clean Architecture.
-Open `CleanUsers.xcodeproj`, run on an iPhone simulator (iOS 17+). Run app tests with Cmd+U; run package tests with:
+A deliberately small app: a **Users** tab (from `jsonplaceholder.typicode.com/users`), a **Favourites** tab, and a **detail screen**.
+Tap the star next to a user to favourite them (saved on the device). Tap a row to see everything about that user.
 
-```bash
-cd Packages/CleanCore && swift test
-```
+Open `CleanBasic.xcodeproj` (iOS 17+). Run tests with Cmd+U (23 tests).
 
-## The dependency rule, enforced by the compiler
-Source dependencies point inward only. The layers are separate Swift package modules, so an illegal import does not compile.
+## Layers (plain folders in one target)
 
 ```
-Presentation (app target)  ──►  Domain  ◄──  DataLayer
-  SwiftUI views                  entities       DTOs + mappers
-  @Observable view models        use cases      URLSession, Core Data
-                                 repository     repository implementations
-                                 PROTOCOLS
-              AppContainer (composition root) is the only code that sees all three
+Presentation  ──►  Domain  ◄──  Data
 ```
+Arrows mean "knows about". Domain knows nobody.
 
-| Module | Imports | Contains |
+| Layer | Files | Job |
 |---|---|---|
-| `Domain` | Foundation only | Entities (`User`, `Weather`, ...), use cases, repository **protocols** |
-| `DataLayer` | Domain, CoreData | DTOs, mappers, `URLSession` client, Core Data store, repository **implementations** |
-| App target | Domain (+ DataLayer in `AppContainer` only) | SwiftUI views, view models, composition root |
+| **Domain** | `User` (+ `Address`), `UserRepository`, `GetUsersUseCase`, `FavoritesRepository`, `FavoritesUseCases` | What the app does: entities, use cases, and the protocols it needs from outside |
+| **Data** | `UserDTO`, `RemoteUserRepository`, `StoredUserDTO`, `UserDefaultsFavoritesRepository` | How data is fetched and saved (network, UserDefaults) |
+| **Presentation** | `Users/`, `Favorites/`, `Detail/`, `Shared/` | View models (state + formatting) and SwiftUI views |
+| **App** | `AppContainer`, `RootView`, `CleanBasicApp` | Connects the layers and shows the two tabs |
 
-Verify it yourself: `grep -rh "^import" Packages/CleanCore/Sources/Domain | sort -u` prints only `Foundation`, and `AppContainer.swift` is the only app file that imports `DataLayer`.
+## How "tap the star" flows
 
-## Dependency inversion in one example
-The Domain declares what it needs (`protocol FavoritesRepository`). The Data layer implements it (`FavoritesRepositoryImpl`, internal, backed by Core Data). `DataLayer.makeRepositories()` hands it back typed as the Domain protocol, so nothing outside the module can depend on the concrete class.
+```
+UserRowView (star button)
+  → UsersViewModel.toggleFavorite(id:)
+    → ToggleFavoriteUseCase            (rule: favourite ⇄ not favourite)
+      → FavoritesRepository (protocol)
+        ⇠ UserDefaultsFavoritesRepository saves it, then announces the new list
+  ← both view models listening to ObserveFavoritesUseCase receive the list and the screens redraw
+```
 
-## What moved compared to MVVM
-| MVVM | Clean |
-|---|---|
-| View model fetched, saved weather for favourites, fell back to cache | `GetWeatherUseCase` owns those rules; the view model only formats the result |
-| `toggle` also quietly cached the avatar in the store | `ToggleFavoriteUseCase` states the rule: favouriting also saves the avatar |
-| View model chose between saved and downloaded avatar | `LoadAvatarUseCase` |
-| `User` was `Codable`, with `lat`/`lng` strings, shaped like the API | `User` is plain Swift with `Coordinate?`; `UserDTO` + mapper absorb the API shape |
-| `WeatherReport` mirrored Open-Meteo and WMO codes | `Weather` + `WeatherCondition` enum; code mapping is in the Data layer, wording and SF Symbols in Presentation |
-| Persisted weather used the API JSON shape | `WeatherCacheDTO`: its own storage format, independent of the API |
-| Observable `revision` counter | `AsyncStream<[User]>` from `ObserveFavoritesUseCase` (Domain has no UI framework, not even Observation) |
-| Core Data on the main context | Core Data on a background context |
-| View models depend on service/repository protocols | View models depend only on **use case** protocols |
+The two tabs never talk to each other. Both just watch the same favourites stream.
 
-## Tests (48 total)
-- `Domain` (12, `swift test`): use cases against fake repositories. No UI, network or database.
-- `DataLayer` (13, `swift test`): DTO decoding and mapping, plus the real Core Data repository on an in-memory store.
-- App (23, Cmd+U): view models against fake use cases.
+## How opening the detail screen works
 
-## Costs (be honest about them)
-- Far more files and indirection than MVVM for the same feature set. Several use cases here are one-line pass-throughs (`FetchUsersUseCase`, `ObserveFavoritesUseCase`). Many teams skip use cases that add no rule and call the repository directly.
-- Mapping between DTO, entity and Core Data object is repeated boilerplate. It pays off when the API or storage changes independently of the app.
-- `public` access control everywhere in `Domain` is the price of real module boundaries.
+```
+Tap a row  →  NavigationLink(value: user)  →  navigationDestination(for: User.self)
+           →  makeDetailViewModel(user)    (a closure given by AppContainer, so views never build view models)
+           →  UserDetailViewModel          (formats the fields; reuses ObserveFavorites + ToggleFavorite)
+           →  UserDetailView
+```
 
-## Notes
-- SwiftUI reaches view models through `AppContainer` in the environment (service-locator-style access). The view models themselves receive their use cases through constructor injection.
-- Forecast dates are calendar days at 00:00 UTC, formatted with a UTC time zone so the weekday matches the forecast location's own day.
+The detail screen needed **no new use case**: showing a user we already have is not a business action, and its star is the same favourite use case as the list. What it did need was a richer `User` entity (phone, website, address, avatar URL), which touched the entity, both DTOs and the mappers: a good example of how one change fans out across layers.
+
+## Why the Data layer has two DTOs
+- `UserDTO`: the shape the **API** sends.
+- `StoredUserDTO`: the shape saved on the **device**.
+
+Keeping them separate means an API change can never break data already saved on someone's phone.
+
+## Things to try next
+- Swap `UserDefaultsFavoritesRepository` for a Core Data version: only the Data layer and `AppContainer` change.
+- Save the avatar picture for favourites so the detail screen works fully offline (it uses `AsyncImage` now).
+- Add weather for the user's address.
